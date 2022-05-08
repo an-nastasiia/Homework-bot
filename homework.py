@@ -88,7 +88,7 @@ def check_response(response) -> list:
 
 
 def parse_status(homework: dict) -> str:
-    """Возвращает один из вердиктов словаря HOMEWORK_STATUSES"""
+    """Возвращает один из вердиктов словаря HOMEWORK_STATUSES."""
     homework_name = homework.get('homework_name')
     verdict = HOMEWORK_STATUSES.get(homework.get('status'))
     if verdict is None:
