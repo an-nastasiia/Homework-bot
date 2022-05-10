@@ -7,7 +7,11 @@ from http import HTTPStatus
 from dotenv import load_dotenv
 import requests as r
 import telegram as t
-
+try:
+    from simplejson.errors import JSONDecodeError
+except ImportError:
+    from json.decoder import JSONDecodeError
+from elasticsearch.exceptions import NotFoundError
 
 load_dotenv()
 
@@ -27,7 +31,7 @@ HOMEWORK_STATUSES = {
 }
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler(stream=sys.stdout)
 formatter = logging.Formatter(
     '%(asctime)s [%(levelname)s] %(message)s | Функция: %(funcName)s'
@@ -47,16 +51,25 @@ def send_message(bot, message) -> None:
 
 def get_api_answer(current_timestamp) -> dict:
     """Если запрос успешный, возвращает ответ API типа данных Python."""
-    timestamp = current_timestamp or int(time.time())
-    params = {'from_date': timestamp}
-    response = r.get(ENDPOINT, headers=HEADERS, params=params)
+    params = {'from_date': current_timestamp}
+    try:
+        response = r.get(ENDPOINT, headers=HEADERS, params=params)
+    except ConnectionError:
+        msg = 'Не удалось получить ответ от API'
+        logger.error(msg)
+        raise ConnectionError(msg)
     if response.status_code == HTTPStatus.OK:
-        return response.json()
+        try:
+            return response.json()
+        except JSONDecodeError:
+            msg = 'Не удалось преобразовать JSON-ответ к типу данных Python'
+            logger.error(msg)
+            raise JSONDecodeError(msg)
     elif response.status_code == HTTPStatus.NOT_FOUND:
         msg = (f'Произошел сбой: эндпоинт {ENDPOINT} недоступен. '
                f'Код ответа API: {response.status_code}')
         logger.error(msg)
-        raise r.RequestException(msg)
+        raise NotFoundError(msg)
     else:
         msg = (f'Cбой при запросе к эндпоинту {ENDPOINT}. '
                f'Код ответа API: {response.status_code}')
@@ -75,21 +88,22 @@ def check_response(response) -> list:
         msg = ('По ключу homeworks данные пришли не в виде list.')
         logger.error(msg)
         raise TypeError(msg)
-    elif homework_list == {}:
-        msg = ('API прислал пустой словарь.')
-        logger.error(msg)
-        raise KeyError(msg)
-    elif response.get('homeworks') is None:
-        msg = ('Ответ от API не содержит ключа "homeworks"')
-        logger.error(msg)
-        raise KeyError(msg)
     else:
         return homework_list
 
 
-def parse_status(homework: dict) -> str:
+def parse_status(homework) -> str:
     """Возвращает один из вердиктов словаря HOMEWORK_STATUSES."""
-    homework_name = homework.get('homework_name')
+    try:
+        homework_name = homework.get('homework_name')
+    except type(homework) != dict:
+        msg = f'Тип данных домашки {type(homework)}, а не dict.'
+        logger.error(msg)
+        raise TypeError(msg)
+    except homework_name is None:
+        msg = 'В словаре homework нет ключа homework_name.'
+        logger.error(msg)
+        raise KeyError(msg)
     verdict = HOMEWORK_STATUSES.get(homework.get('status'))
     if verdict is None:
         msg = ('Недокументированный статус домашней работы.')
@@ -101,45 +115,43 @@ def parse_status(homework: dict) -> str:
 def check_tokens() -> bool:
     """Проверка доступности обязательных переменных окружения."""
     tokens = ['PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID']
+    global missing_tokens
+    missing_tokens = []
     for token in tokens:
         if globals()[token] is None:
-            return False
+            missing_tokens.append(token)
+    if len(missing_tokens) != 0:
+        return False
     return True
 
 
 def main() -> None:
     """Основная логика работы бота."""
-    bot = t.Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = int(time.time())
-    current_status = ''
-    msg_error = ''
-    if check_tokens():
-        while True:
-            try:
-                response = get_api_answer(current_timestamp)
-                homework_list = check_response(response)
-                if homework_list:
-                    for homework in homework_list:
-                        message = parse_status(homework)
-                        hw_status = homework.get('status')
-                        if hw_status != current_status:
-                            send_message(bot, message)
-                            current_status = hw_status
-                            current_timestamp = response.get('current_date',
-                                                             current_timestamp)
-                        else:
-                            logger.debug('Статус проверки не обновлялся.')
-                    time.sleep(RETRY_TIME)
-            except Exception as error:
-                if error != msg_error:
-                    message = f'Произошел сбой: {error}'
-                    send_message(bot, message)
-                    time.sleep(RETRY_TIME)
-    else:
-        msg = ('Нет обязательной переменной окружения. '
+    if not check_tokens():
+        msg = ('Нет обязательных переменных окружения: '
+               f'{", ".join(missing_tokens)}. '
                'Программа принудительно остановлена.')
         logger.critical(msg)
-        raise t.InvalidToken(msg)
+        raise t.error.InvalidToken()
+    bot = t.Bot(token=TELEGRAM_TOKEN)
+    current_timestamp = int(time.time())
+    msg_error = ''
+    while True:
+        try:
+            response = get_api_answer(current_timestamp)
+            homework_list = check_response(response)
+            if len(homework_list) == 0:
+                logger.debug('Статус проверки не обновлялся.')
+            else:
+                for homework in homework_list:
+                    message = parse_status(homework)
+                    send_message(bot, message)
+            current_timestamp = response.get('current_date', current_timestamp)
+        except Exception as error:
+            if error != msg_error:
+                message = f'Произошел сбой: {error}'
+                send_message(bot, message)
+        time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
