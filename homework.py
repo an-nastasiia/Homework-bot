@@ -11,7 +11,7 @@ try:
     from simplejson.errors import JSONDecodeError
 except ImportError:
     from json.decoder import JSONDecodeError
-from elasticsearch.exceptions import NotFoundError
+
 
 load_dotenv()
 
@@ -69,7 +69,7 @@ def get_api_answer(current_timestamp) -> dict:
         msg = (f'Произошел сбой: эндпоинт {ENDPOINT} недоступен. '
                f'Код ответа API: {response.status_code}')
         logger.error(msg)
-        raise NotFoundError(msg)
+        raise r.RequestException(msg)
     else:
         msg = (f'Cбой при запросе к эндпоинту {ENDPOINT}. '
                f'Код ответа API: {response.status_code}')
