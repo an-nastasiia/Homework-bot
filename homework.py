@@ -1,16 +1,13 @@
 import logging
-import sys
 import os
 import time
 from http import HTTPStatus
+from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 import requests as r
 import telegram as t
-try:
-    from simplejson.errors import JSONDecodeError
-except ImportError:
-    from json.decoder import JSONDecodeError
+from json.decoder import JSONDecodeError
 
 
 load_dotenv()
@@ -19,6 +16,7 @@ PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
+BEFORE_NOW_INTERVAL = 60 * 60 * 24
 RETRY_TIME = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
@@ -32,7 +30,9 @@ HOMEWORK_STATUSES = {
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(stream=sys.stdout)
+handler = RotatingFileHandler('homework_logger.log',
+                              maxBytes=50000000,
+                              backupCount=5)
 formatter = logging.Formatter(
     '%(asctime)s [%(levelname)s] %(message)s | Функция: %(funcName)s'
 )
@@ -96,10 +96,10 @@ def parse_status(homework) -> str:
     """Возвращает один из вердиктов словаря HOMEWORK_STATUSES."""
     try:
         homework_name = homework.get('homework_name')
-    except type(homework) != dict:
+    except AttributeError:
         msg = f'Тип данных домашки {type(homework)}, а не dict.'
         logger.error(msg)
-        raise TypeError(msg)
+        raise AttributeError(msg)
     except homework_name is None:
         msg = 'В словаре homework нет ключа homework_name.'
         logger.error(msg)
@@ -115,12 +115,15 @@ def parse_status(homework) -> str:
 def check_tokens() -> bool:
     """Проверка доступности обязательных переменных окружения."""
     tokens = ['PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID']
-    global missing_tokens
     missing_tokens = []
     for token in tokens:
         if globals()[token] is None:
             missing_tokens.append(token)
     if len(missing_tokens) != 0:
+        logger.critical('Нет обязательных переменных окружения: '
+                        f'{", ".join(missing_tokens)}. '
+                        'Программа принудительно остановлена.')
+
         return False
     return True
 
@@ -128,13 +131,9 @@ def check_tokens() -> bool:
 def main() -> None:
     """Основная логика работы бота."""
     if not check_tokens():
-        msg = ('Нет обязательных переменных окружения: '
-               f'{", ".join(missing_tokens)}. '
-               'Программа принудительно остановлена.')
-        logger.critical(msg)
         raise t.error.InvalidToken()
     bot = t.Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = int(time.time())
+    current_timestamp = int(time.time()) - BEFORE_NOW_INTERVAL
     msg_error = ''
     while True:
         try:
@@ -147,9 +146,12 @@ def main() -> None:
                     message = parse_status(homework)
                     send_message(bot, message)
             current_timestamp = response.get('current_date', current_timestamp)
+            msg_error = ''
         except Exception as error:
             if error != msg_error:
                 message = f'Произошел сбой: {error}'
+                msg_error = error
+                logger.error(message)
                 send_message(bot, message)
         time.sleep(RETRY_TIME)
 
