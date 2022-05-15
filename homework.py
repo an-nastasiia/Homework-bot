@@ -100,7 +100,7 @@ def parse_status(homework) -> str:
         msg = f'Тип данных домашки {type(homework)}, а не dict.'
         logger.error(msg)
         raise AttributeError(msg)
-    except homework_name is None:
+    if homework_name is None:
         msg = 'В словаре homework нет ключа homework_name.'
         logger.error(msg)
         raise KeyError(msg)
